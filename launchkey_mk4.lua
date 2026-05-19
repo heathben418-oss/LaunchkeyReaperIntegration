@@ -11,12 +11,24 @@ dofile(script_path .. 'launchkey_oled.lua')
 local MSG_ENABLE  = string.char(0x9F, 0x0C, 0x7F)
 local MSG_DISABLE = string.char(0x9F, 0x0C, 0x00)
 
+-- Transport button notes (Note On/Off ch16 = 0x9F / 0x8F).
+-- If buttons don't respond, enable Config.debug_midi to see actual values.
+local NOTE_SHIFT  = 0x70  -- 112
+local NOTE_PLAY   = 0x73  -- 115
+local NOTE_STOP   = 0x74  -- 116
+local NOTE_RECORD = 0x75  -- 117
+local NOTE_LOOP   = 0x72  -- 114
+
 -- ── State ──────────────────────────────────────────────────────────────────────
 local daw_out_idx   = nil
 local daw_in_idx    = nil
 local connected     = false
 local out_port_name = 'Not found'
 local in_port_name  = 'Not found'
+
+local State = {
+  shift_held = false,
+}
 
 -- ── MIDI send helper ───────────────────────────────────────────────────────────
 local function midiSend(msg)
@@ -89,6 +101,55 @@ local function disconnect()
   daw_out_idx = nil
   daw_in_idx  = nil
   connected   = false
+end
+
+-- ── MIDI input handler ────────────────────────────────────────────────────────
+local function handleMIDI(msg)
+  if #msg < 3 then return end
+  local status, note, vel = msg:byte(1), msg:byte(2), msg:byte(3)
+  local is_on = (status == 0x9F) and vel > 0
+
+  if Config.debug_midi then
+    reaper.ShowConsoleMsg(string.format('LK MIDI in: %02X %02X %02X\n', status, note, vel))
+  end
+
+  -- Shift: track held state, consumed here
+  if note == NOTE_SHIFT then
+    State.shift_held = is_on
+    return
+  end
+
+  if not is_on then return end   -- ignore note-off for all other buttons
+
+  if note == NOTE_PLAY then
+    if State.shift_held then
+      reaper.Main_OnCommand(40044, 0)  -- Pause
+    else
+      reaper.Main_OnCommand(1007, 0)   -- Play
+    end
+  elseif note == NOTE_STOP then
+    if reaper.GetPlayState() == 0 then
+      reaper.Main_OnCommand(40042, 0)  -- already stopped → go to project start
+    else
+      reaper.Main_OnCommand(1016, 0)   -- Stop
+    end
+  elseif note == NOTE_RECORD then
+    reaper.Main_OnCommand(1013, 0)     -- Record
+  elseif note == NOTE_LOOP then
+    reaper.Main_OnCommand(1068, 0)     -- Toggle loop
+  end
+end
+
+-- ── MIDI input poller ─────────────────────────────────────────────────────────
+local function pollMIDIIn()
+  if not daw_in_idx then return end
+  local i = 0
+  while i < 64 do
+    local retval, msg = reaper.MIDI_GetRecentInputEvent(daw_in_idx, i)
+    if retval == 0 then break end
+    if msg and #msg >= 3 then handleMIDI(msg) end
+    i = i + 1
+  end
 end
 
 -- ── Handshake HTA popup ───────────────────────────────────────────────────────
@@ -256,7 +317,7 @@ end
 
 -- ── Main loop ──────────────────────────────────────────────────────────────────
 local function loop()
-  -- Future steps: read incoming MIDI via MIDI_GetRecentInputEvent and dispatch here.
+  pollMIDIIn()
   reaper.defer(loop)
 end
 

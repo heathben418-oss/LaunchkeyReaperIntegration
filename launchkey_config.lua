@@ -16,4 +16,7 @@ Config = {
 
   -- Seconds to show the handshake popup. 0 = wait for user to dismiss.
   popup_timeout = 0,
+
+  -- Print every incoming DAW MIDI byte to the console (for verifying button mappings).
+  debug_midi = true,
 }
